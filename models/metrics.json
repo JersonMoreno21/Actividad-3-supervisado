@@ -1,5 +1,5 @@
 {
-  "creado": "2026-10-08T11:26:51+00:00",
+  "creado": "2026-10-08T21:42:36+00:00",
   "seed": 42,
   "n_filas": 8010,
   "n_filas_dataset": 8010,
@@ -24,7 +24,16 @@
     "grado_o",
     "grado_d",
     "tipo_o",
-    "tipo_d"
+    "tipo_d",
+    "rumbo_sin",
+    "rumbo_cos",
+    "distman_km",
+    "delta_corredor",
+    "delta_zona",
+    "terminal_o",
+    "terminal_d",
+    "es_zona_o",
+    "es_zona_d"
   ],
   "evaluacion": {
     "estrategia": "held-out por origen",
@@ -66,19 +75,34 @@
         "r2": 0.7106
       },
       "ridge": {
-        "mae": 4.807,
-        "mae_std": 0.414,
-        "r2": 0.8176
+        "mae": 4.81,
+        "mae_std": 0.43,
+        "r2": 0.821
       },
       "random_forest": {
-        "mae": 2.335,
+        "mae": 2.145,
         "mae_std": 0.141,
-        "r2": 0.9368
+        "r2": 0.9455
       },
       "gradient_boosting": {
-        "mae": 3.2,
+        "mae": 2.758,
         "mae_std": 0.211,
-        "r2": 0.9167
+        "r2": 0.9363
+      },
+      "extra_trees": {
+        "mae": 1.828,
+        "mae_std": 0.178,
+        "r2": 0.9548
+      },
+      "hist_gradient_boosting": {
+        "mae": 1.663,
+        "mae_std": 0.084,
+        "r2": 0.9675
+      },
+      "promedio_hgb_et": {
+        "mae": 1.667,
+        "mae_std": 0.13,
+        "r2": 0.964
       },
       "_folds": 5
     },
@@ -89,19 +113,29 @@
         "f1_macro": 0.0314
       },
       "logreg": {
-        "accuracy": 0.3921,
-        "accuracy_std": 0.0288,
-        "f1_macro": 0.3155
+        "accuracy": 0.4328,
+        "accuracy_std": 0.0344,
+        "f1_macro": 0.366
       },
       "knn": {
-        "accuracy": 0.6265,
-        "accuracy_std": 0.1029,
-        "f1_macro": 0.5652
+        "accuracy": 0.6223,
+        "accuracy_std": 0.0712,
+        "f1_macro": 0.5675
       },
       "random_forest": {
-        "accuracy": 0.6767,
-        "accuracy_std": 0.0908,
-        "f1_macro": 0.6269
+        "accuracy": 0.7021,
+        "accuracy_std": 0.0805,
+        "f1_macro": 0.6508
+      },
+      "extra_trees": {
+        "accuracy": 0.7017,
+        "accuracy_std": 0.0827,
+        "f1_macro": 0.649
+      },
+      "voto_rf_et": {
+        "accuracy": 0.7061,
+        "accuracy_std": 0.0837,
+        "f1_macro": 0.6508
       },
       "_folds": 5
     }
@@ -118,19 +152,34 @@
       "r2": 0.6874
     },
     "ridge": {
-      "mae": 4.57,
-      "rmse": 6.139,
-      "r2": 0.8111
+      "mae": 4.543,
+      "rmse": 5.993,
+      "r2": 0.8199
     },
     "random_forest": {
-      "mae": 2.059,
-      "rmse": 2.76,
-      "r2": 0.9618
+      "mae": 2.006,
+      "rmse": 2.722,
+      "r2": 0.9629
     },
     "gradient_boosting": {
-      "mae": 3.183,
-      "rmse": 4.046,
-      "r2": 0.918
+      "mae": 2.498,
+      "rmse": 3.203,
+      "r2": 0.9486
+    },
+    "extra_trees": {
+      "mae": 1.761,
+      "rmse": 2.53,
+      "r2": 0.9679
+    },
+    "hist_gradient_boosting": {
+      "mae": 1.636,
+      "rmse": 2.418,
+      "r2": 0.9707
+    },
+    "promedio_hgb_et": {
+      "mae": 1.632,
+      "rmse": 2.287,
+      "r2": 0.9738
     }
   },
   "transbordos": {
@@ -140,22 +189,32 @@
       "mae": 1.677
     },
     "logreg": {
-      "accuracy": 0.4513,
-      "f1_macro": 0.3438,
-      "mae": 1.059
+      "accuracy": 0.5131,
+      "f1_macro": 0.4338,
+      "mae": 0.898
     },
     "knn": {
-      "accuracy": 0.661,
-      "f1_macro": 0.6983,
-      "mae": 0.433
+      "accuracy": 0.6648,
+      "f1_macro": 0.6487,
+      "mae": 0.431
     },
     "random_forest": {
-      "accuracy": 0.7291,
-      "f1_macro": 0.7658,
-      "mae": 0.303
+      "accuracy": 0.7347,
+      "f1_macro": 0.781,
+      "mae": 0.295
+    },
+    "extra_trees": {
+      "accuracy": 0.7285,
+      "f1_macro": 0.7653,
+      "mae": 0.301
+    },
+    "voto_rf_et": {
+      "accuracy": 0.7378,
+      "f1_macro": 0.7694,
+      "mae": 0.29
     }
   },
-  "mejor_tiempo": "random_forest",
-  "mejor_transbordos": "random_forest",
+  "mejor_tiempo": "hist_gradient_boosting",
+  "mejor_transbordos": "voto_rf_et",
   "mejor_seleccionado_por": "cv_train"
 }

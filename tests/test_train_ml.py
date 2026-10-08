@@ -20,7 +20,7 @@ from supervised.train import (
     separar,
 )
 
-MUESTRA = 1500
+MUESTRA = 900
 
 
 @pytest.fixture(scope="module")
@@ -30,7 +30,9 @@ def df():
 
 @pytest.fixture(scope="module")
 def metrics(df):
-    return entrenar(df, guardar=False, muestra=MUESTRA)
+    # muestra + 3 pliegues: el pipeline completo (8 regresores + 6
+    # clasificadores, con ensambles) tarda minutos con los 8010 pares.
+    return entrenar(df, guardar=False, muestra=MUESTRA, cv_folds=3)
 
 
 def test_estructura_de_metricas(metrics):
@@ -69,6 +71,19 @@ def test_transbordos_baten_baseline(metrics):
     assert c["random_forest"]["accuracy"] > c["baseline_frecuente"]["accuracy"]
     assert c["random_forest"]["accuracy"] > 0.6
     assert 0.0 <= c["random_forest"]["f1_macro"] <= 1.0
+
+
+def test_ensambles_presentes_y_mejores_que_baselines(metrics):
+    """Extra Trees, Histogram Gradient Boosting y los ensambles entrenan y el
+    ganador de la CV bate a los baselines (sin mirar el test)."""
+    t, c = metrics["tiempo"], metrics["transbordos"]
+    assert {"extra_trees", "hist_gradient_boosting", "promedio_hgb_et"} <= set(t)
+    assert {"extra_trees", "voto_rf_et"} <= set(c)
+
+    cvt = metrics["cv"]["tiempo"]
+    cvc = metrics["cv"]["transbordos"]
+    assert cvt[metrics["mejor_tiempo"]]["mae"] < cvt["baseline_media"]["mae"]
+    assert cvc[metrics["mejor_transbordos"]]["accuracy"] > cvc["baseline_frecuente"]["accuracy"]
 
 
 def test_split_reproducible(df):
@@ -121,7 +136,8 @@ def test_split_sin_fuga_por_espejo(df):
 
 
 def test_guardar_y_recargar(df, tmp_path):
-    metrics = entrenar(df, guardar=True, dir_modelos=str(tmp_path), muestra=600)
+    metrics = entrenar(df, guardar=True, dir_modelos=str(tmp_path),
+                       muestra=500, cv_folds=2)
     joblib_path = tmp_path / "model.joblib"
     metrics_path = tmp_path / "metrics.json"
     assert joblib_path.exists()

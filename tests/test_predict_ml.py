@@ -22,7 +22,8 @@ def bundle(tmp_path_factory):
     from supervised.train import cargar_modelos
 
     dir_modelos = str(tmp_path_factory.mktemp("models"))
-    entrenar(cargar_dataset(), guardar=True, dir_modelos=dir_modelos, muestra=1200)
+    entrenar(cargar_dataset(), guardar=True, dir_modelos=dir_modelos,
+             muestra=800, cv_folds=3)
     return cargar_modelos(dir_modelos=dir_modelos)
 
 
@@ -63,10 +64,12 @@ def test_predecir_contrasta_con_dijkstra(ctx, bundle):
 
 
 def test_predecir_por_modelo(ctx, bundle):
+    from supervised.features import FEATURES
+
     res = predecir("univalle", "chiminangos", bundle=bundle)
     assert set(res["por_modelo"]["tiempo"]) == set(bundle["modelos_tiempo"])
     assert set(res["por_modelo"]["transbordos"]) == set(bundle["modelos_transbordos"])
-    assert len(res["features"]) == 18
+    assert len(res["features"]) == len(FEATURES)
 
 
 def test_predecir_prediccion_razonable(bundle):

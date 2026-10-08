@@ -1,12 +1,13 @@
-"""Features numéricas para el par origen→destino.
+"""Features numéricas para el par origen→destino (27).
 
 Todas las features son observables *antes* de calcular la ruta (no se usa
 ninguna etiqueta), evitando fuga de datos (data leakage):
 
-  - geografía: coordenadas WGS84, distancia haversine, deltas
+  - geografía: coordenadas WGS84, distancia haversine, deltas, rumbo y
+    distancia "manhattan" aproximada
   - topología: corredor/zona de cada extremo, mismo corredor, misma zona,
     si existe arista directa y el grado de cada nodo en el grafo
-  - categoría: tipo lógico de estación (estación / terminal / parada)
+  - categoría: tipo lógico de estación (estación / terminal / parada / zona)
 """
 
 from __future__ import annotations
@@ -34,6 +35,15 @@ FEATURES: List[str] = [
     "grado_d",
     "tipo_o",
     "tipo_d",
+    "rumbo_sin",
+    "rumbo_cos",
+    "distman_km",
+    "delta_corredor",
+    "delta_zona",
+    "terminal_o",
+    "terminal_d",
+    "es_zona_o",
+    "es_zona_d",
 ]
 
 TIPOS: Dict[str, int] = {"estacion": 0, "terminal": 1, "parada": 2, "zona": 3}
@@ -155,18 +165,33 @@ def vector_features(origen: str, destino: str, meta: MetaFeatures) -> List[float
     z_o, z_d = meta.zona_de(origen), meta.zona_de(destino)
     t_o, t_d = meta.tipo.get(origen, "estacion"), meta.tipo.get(destino, "estacion")
 
+    dlat, dlon = lat_d - lat_o, lon_d - lon_o
+    idx_c_o = float(meta.corredor_idx.get(c_o, -1))
+    idx_c_d = float(meta.corredor_idx.get(c_d, -1))
+    idx_z_o = float(meta.zona_idx.get(z_o, -1))
+    idx_z_d = float(meta.zona_idx.get(z_d, -1))
+    # -1 significa "sin corredor/zona" (nodos-zona virtuales): la diferencia
+    # de índices no significa nada ahí, así que se usa 0.
+    delta_c = abs(idx_c_o - idx_c_d) if idx_c_o >= 0 and idx_c_d >= 0 else 0.0
+    delta_z = abs(idx_z_o - idx_z_d) if idx_z_o >= 0 and idx_z_d >= 0 else 0.0
+    # Rumbo origen→destino (0° = norte, sentido horario); seno/coseno para
+    # que la codificación sea continua en el corte de 360°→0°.
+    rumbo = math.degrees(
+        math.atan2(dlon * math.cos(math.radians(lat_o)), dlat)
+    ) % 360.0
+
     return [
         lat_o,
         lon_o,
         lat_d,
         lon_d,
         distancia_km(lat_o, lon_o, lat_d, lon_d),
-        lat_d - lat_o,
-        lon_d - lon_o,
-        float(meta.corredor_idx.get(c_o, -1)),
-        float(meta.corredor_idx.get(c_d, -1)),
-        float(meta.zona_idx.get(z_o, -1)),
-        float(meta.zona_idx.get(z_d, -1)),
+        dlat,
+        dlon,
+        idx_c_o,
+        idx_c_d,
+        idx_z_o,
+        idx_z_d,
         float(c_o == c_d and c_o != ""),
         float(z_o == z_d and z_o != ""),
         float(meta.graph.hay_adyacente(origen, destino)),
@@ -174,6 +199,15 @@ def vector_features(origen: str, destino: str, meta: MetaFeatures) -> List[float
         float(meta.grado.get(destino, 0)),
         float(TIPOS.get(t_o, 0)),
         float(TIPOS.get(t_d, 0)),
+        math.sin(math.radians(rumbo)),
+        math.cos(math.radians(rumbo)),
+        (abs(dlat) + abs(dlon)) * 111.32,
+        delta_c,
+        delta_z,
+        float(t_o == "terminal"),
+        float(t_d == "terminal"),
+        float(t_o == "zona"),
+        float(t_d == "zona"),
     ]
 
 

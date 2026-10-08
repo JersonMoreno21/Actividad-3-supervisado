@@ -3,9 +3,12 @@
 Dos tareas sobre los mismos pares origen→destino:
 
   - **regresión** del `tiempo` total (minutos): Ridge, Random Forest,
-    Gradient Boosting + dos baselines (media y velocidad media de la red);
-  - **clasificación** de `transbordos`: Regresión Logística, KNN,
-    Random Forest + baseline de clase más frecuente.
+    Gradient Boosting, Extra Trees, Histogram Gradient Boosting, un promedio
+    de los dos últimos (`promedio_hgb_et`) + dos baselines (media y velocidad
+    media de la red);
+  - **clasificación** de `transbordos`: Regresión Logística, KNN, Random
+    Forest, Extra Trees y un voto suave RF+ET (`voto_rf_et`) + baseline de
+    clase más frecuente.
 
 Split **held-out por origen** (los pares espejo (a,b)/(b,a) no se cruzan
 entre train y test) con `random_state` fijo; el mejor modelo se elige con
@@ -77,6 +80,88 @@ class BaselineVelocidad:
 
 
 # ---------------------------------------------------------------------------
+# Ensambles (promedio de predicciones / de probabilidades)
+# ---------------------------------------------------------------------------
+
+def _hgb(seed: int, max_iter: int = 300) -> Any:
+    from sklearn.ensemble import HistGradientBoostingRegressor
+
+    return HistGradientBoostingRegressor(
+        max_iter=max_iter,
+        learning_rate=0.07,
+        max_leaf_nodes=63,
+        l2_regularization=0.1,
+        random_state=seed,
+    )
+
+
+def _extra_trees_reg(seed: int) -> Any:
+    from sklearn.ensemble import ExtraTreesRegressor
+
+    return ExtraTreesRegressor(n_estimators=300, random_state=seed, n_jobs=-1)
+
+
+class PromedioReg:
+    """Promedia las predicciones de varios regresores.
+
+    Compatibile con `sklearn.base.clone`/CV (mismos métodos que un estimator).
+    """
+
+    def __init__(self, modelos: Optional[List[Any]] = None) -> None:
+        self.modelos = modelos or []
+
+    def get_params(self, deep: bool = True) -> Dict[str, Any]:
+        return {}
+
+    def set_params(self, **params: Any) -> "PromedioReg":
+        return self
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "PromedioReg":
+        self.ajustados_ = []
+        for m in self.modelos:
+            m = _clonar(m)
+            m.fit(X, y)
+            self.ajustados_.append(m)
+        return self
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return np.mean([m.predict(X) for m in self.ajustados_], axis=0)
+
+
+class PromedioProb:
+    """Voto suave: promedia las probabilidades de varios clasificadores."""
+
+    def __init__(self, modelos: Optional[List[Any]] = None) -> None:
+        self.modelos = modelos or []
+
+    def get_params(self, deep: bool = True) -> Dict[str, Any]:
+        return {}
+
+    def set_params(self, **params: Any) -> "PromedioProb":
+        return self
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> "PromedioProb":
+        self.clases_ = np.unique(y)
+        self.ajustados_ = []
+        for m in self.modelos:
+            m = _clonar(m)
+            m.fit(X, y)
+            self.ajustados_.append(m)
+        return self
+
+    def predict_proba(self, X: np.ndarray) -> np.ndarray:
+        votos = np.zeros((len(X), len(self.clases_)))
+        for m in self.ajustados_:
+            proba = m.predict_proba(X)
+            for i, c in enumerate(m.classes_):
+                votos[:, int(np.where(self.clases_ == c)[0][0])] += proba[:, i]
+        return votos / max(1, len(self.ajustados_))
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        return self.clases_[np.argmax(self.predict_proba(X), axis=1)]
+
+
+# ---------------------------------------------------------------------------
 # Fábricas de modelos (sin ajustar: se clonan por nombre)
 # ---------------------------------------------------------------------------
 
@@ -92,29 +177,36 @@ def _modelos_tiempo(seed: int) -> Dict[str, Any]:
         "baseline_velocidad": BaselineVelocidad(),
         "ridge": make_pipeline(StandardScaler(), Ridge(alpha=1.0)),
         "random_forest": RandomForestRegressor(
-            n_estimators=120, random_state=seed, n_jobs=-1
+            n_estimators=300, random_state=seed, n_jobs=-1
         ),
-        "gradient_boosting": GradientBoostingRegressor(random_state=seed),
+        "gradient_boosting": GradientBoostingRegressor(
+            n_estimators=200, learning_rate=0.08, max_depth=3, random_state=seed
+        ),
+        "extra_trees": _extra_trees_reg(seed),
+        "hist_gradient_boosting": _hgb(seed, max_iter=400),
+        "promedio_hgb_et": PromedioReg([_hgb(seed), _extra_trees_reg(seed)]),
     }
 
 
 def _modelos_transbordos(seed: int) -> Dict[str, Any]:
     from sklearn.dummy import DummyClassifier
-    from sklearn.ensemble import RandomForestClassifier
+    from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
     from sklearn.linear_model import LogisticRegression
     from sklearn.neighbors import KNeighborsClassifier
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
+    rf = RandomForestClassifier(n_estimators=300, random_state=seed, n_jobs=-1)
+    et = ExtraTreesClassifier(n_estimators=300, random_state=seed, n_jobs=-1)
     return {
         "baseline_frecuente": DummyClassifier(strategy="most_frequent"),
         "logreg": make_pipeline(
             StandardScaler(), LogisticRegression(max_iter=2000, random_state=seed)
         ),
         "knn": make_pipeline(StandardScaler(), KNeighborsClassifier(n_neighbors=5)),
-        "random_forest": RandomForestClassifier(
-            n_estimators=120, random_state=seed, n_jobs=-1
-        ),
+        "random_forest": _clonar(rf),
+        "extra_trees": _clonar(et),
+        "voto_rf_et": PromedioProb([rf, et]),
     }
 
 
@@ -415,7 +507,7 @@ def entrenar(
     if guardar:
         guardar_modelos(
             {
-                "version": "1.0.0",
+                "version": "2.0.0",
                 "creado": metrics["creado"],
                 "seed": seed,
                 "features": list(FEATURES),
@@ -433,11 +525,13 @@ def entrenar(
 
 def guardar_modelos(bundle: Dict[str, Any], metrics: Dict[str, Any],
                     dir_modelos: str = MODELS_DIR) -> None:
-    """Escribe model.joblib y metrics.json en `dir_modelos`."""
+    """Escribe model.joblib (comprimido) y metrics.json en `dir_modelos`."""
     import joblib
 
     os.makedirs(dir_modelos, exist_ok=True)
-    joblib.dump(bundle, os.path.join(dir_modelos, "model.joblib"))
+    # compress=3: los modelos de árboles ocupan mucho en bruto; la compresión
+    # baja el bundle de cientos de MB a ~tens de MB sin apenas coste al cargar.
+    joblib.dump(bundle, os.path.join(dir_modelos, "model.joblib"), compress=3)
     with open(os.path.join(dir_modelos, "metrics.json"), "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2, ensure_ascii=False)
 

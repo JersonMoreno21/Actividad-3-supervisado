@@ -49,7 +49,7 @@ htmlcov/
 # Jupyter
 .ipynb_checkpoints/
 
-# Modelos entrenados (88 MB; se regeneran con: python -m supervised entrenar)
+# Modelos entrenados (~143 MB; se regeneran con: python -m supervised entrenar)
 # models/metrics.json SÍ se versiona.
 models/*.joblib
 
