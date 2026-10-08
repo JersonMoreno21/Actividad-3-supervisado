@@ -54,9 +54,18 @@ def construir_grafo(relations: Dict[str, Any]) -> Graph:
     g.coordenadas = relations.get("coordenadas", {})
 
     # Añadir conexiones directas desde hechos 'conecta' (bidireccional:
-    # los buses del MIO operan en ambos sentidos)
+    # los buses del MIO operan en ambos sentidos).
+    # IMPORTANTE: `conecta` ya puede contener ambos sentidos del par (lo hacen
+    # los transbordos y las zonas), así que se deduplica por par NO dirigido:
+    # sin esto cada par generaba dos aristas por dirección y el `grado` de los
+    # nodos salía inflado (262 de 664 aristas eran duplicados).
     conecta = relations.get("conecta", {})
+    pares_vistos: Set[Tuple[str, str]] = set()
     for (origen, destino), (ruta, minutos) in conecta.items():
+        clave = (origen, destino) if origen <= destino else (destino, origen)
+        if clave in pares_vistos:
+            continue
+        pares_vistos.add(clave)
         g.agregar_arista(origen, destino, minutos, ruta)
         g.agregar_arista(destino, origen, minutos, ruta)
 
@@ -107,15 +116,20 @@ def dijkstra(g: Graph, inicio: str, fin: str) -> Optional[Tuple[int, List[Tuple[
     while iteration < max_iterations:
         iteration += 1
 
-        # Elegir el nodo no visitado con distancia mínima
-        nodo_actual = None
-        dist_min = float("inf")
-        for nodo in all_nodes:
-            if nodo not in visitados and dist.get(nodo, float("inf")) < dist_min:
-                dist_min = dist.get(nodo, float("inf"))
-                nodo_actual = nodo
+        # Elegir el nodo no visitado con distancia mínima.
+        # Desempate por nombre de nodo: `all_nodes` es un set, así que sin esa
+        # clave el resultado dependería de PYTHONHASHSEED y el dataset generado
+        # no sería reproducible entre ejecuciones.
+        candidatos = [
+            (dist.get(nodo, float("inf")), nodo)
+            for nodo in all_nodes
+            if nodo not in visitados
+        ]
+        if not candidatos:
+            break
+        dist_min, nodo_actual = min(candidatos)
 
-        if nodo_actual is None or dist_min == float("inf"):
+        if dist_min == float("inf"):
             # No hay más nodos alcanzables
             break
 
@@ -168,8 +182,13 @@ def dijkstra(g: Graph, inicio: str, fin: str) -> Optional[Tuple[int, List[Tuple[
 # ---------------------------------------------------------------------------
 
 def _es_transbordo(codigo_ruta: str) -> bool:
-    """Detecta si una arista representa un transbordo."""
-    return codigo_ruta.startswith("transbordo_")
+    """Detecta si una arista representa un transbordo.
+
+    El builder emite exactamente `"transbordo"` (sin guion bajo final):
+    con el prefijo antiguo `transbordo_` nunca casaba y el recuento de
+    transbordos de esta función salía siempre 0.
+    """
+    return codigo_ruta.startswith("transbordo")
 
 
 def _costo_minutos_y_transbordos(tramos: List[Tuple[str, str, int]]) -> Tuple[int, int]:
@@ -385,8 +404,11 @@ def a_estrella(
                 # Costo heurístico
                 h = heuristica(vecino, fin, g)
 
-                # Costo total f = g + h (usando minutos para f, transbordos como desempate)
-                f_val = (nuevo_g_minutos + int(h), nuevo_g_transbordes)
+                # Costo total f = g + h (usando minutos para f, transbordos
+                # como desempate). Si un nodo no tiene coordenadas la
+                # heurística es infinita: `int(inf)` lanza OverflowError.
+                h_minutos = int(h) if math.isfinite(h) else 0
+                f_val = (nuevo_g_minutos + h_minutos, nuevo_g_transbordes)
 
                 frontier.append((f_val, nuevo_g, vecino))
                 prev_edge[vecino] = borde

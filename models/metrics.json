@@ -1,10 +1,11 @@
 {
-  "creado": "2026-10-08T06:49:20+00:00",
+  "creado": "2026-10-08T11:26:51+00:00",
   "seed": 42,
   "n_filas": 8010,
   "n_filas_dataset": 8010,
-  "n_train": 6408,
+  "n_train": 5112,
   "n_test": 1602,
+  "n_descartadas": 1296,
   "features": [
     "lat_o",
     "lon_o",
@@ -25,55 +26,136 @@
     "tipo_o",
     "tipo_d"
   ],
+  "evaluacion": {
+    "estrategia": "held-out por origen",
+    "regla": "train: origen y destino en el grupo de train; test: origen en el grupo de test; descartados los pares origen(train) -> destino(test), porque su espejo tendría la misma etiqueta",
+    "origenes": 90,
+    "origenes_test": [
+      "amanecer",
+      "centro",
+      "e7_de_agosto",
+      "flora_industrial",
+      "manzana_del_saber",
+      "piloto",
+      "san_bosco",
+      "san_pascual",
+      "santa_monica",
+      "tequendama",
+      "toriental_1_estacion_14",
+      "toriental_1_estacion_3",
+      "toriental_1_estacion_4",
+      "toriental_1_estacion_7",
+      "toriental_2_estacion_16",
+      "toriental_2_estacion_17",
+      "toriental_2_estacion_20",
+      "torre_de_cali"
+    ]
+  },
+  "cv": {
+    "estrategia": "GroupKFold por origen sobre train",
+    "folds": 5,
+    "tiempo": {
+      "baseline_media": {
+        "mae": 12.629,
+        "mae_std": 0.936,
+        "r2": -0.0151
+      },
+      "baseline_velocidad": {
+        "mae": 5.883,
+        "mae_std": 0.462,
+        "r2": 0.7106
+      },
+      "ridge": {
+        "mae": 4.807,
+        "mae_std": 0.414,
+        "r2": 0.8176
+      },
+      "random_forest": {
+        "mae": 2.335,
+        "mae_std": 0.141,
+        "r2": 0.9368
+      },
+      "gradient_boosting": {
+        "mae": 3.2,
+        "mae_std": 0.211,
+        "r2": 0.9167
+      },
+      "_folds": 5
+    },
+    "transbordos": {
+      "baseline_frecuente": {
+        "accuracy": 0.195,
+        "accuracy_std": 0.0101,
+        "f1_macro": 0.0314
+      },
+      "logreg": {
+        "accuracy": 0.3921,
+        "accuracy_std": 0.0288,
+        "f1_macro": 0.3155
+      },
+      "knn": {
+        "accuracy": 0.6265,
+        "accuracy_std": 0.1029,
+        "f1_macro": 0.5652
+      },
+      "random_forest": {
+        "accuracy": 0.6767,
+        "accuracy_std": 0.0908,
+        "f1_macro": 0.6269
+      },
+      "_folds": 5
+    }
+  },
   "tiempo": {
     "baseline_media": {
-      "mae": 12.649,
-      "rmse": 15.484,
-      "r2": -0.001
+      "mae": 11.669,
+      "rmse": 14.37,
+      "r2": -0.0353
     },
     "baseline_velocidad": {
-      "mae": 5.865,
-      "rmse": 8.293,
-      "r2": 0.7129
+      "mae": 5.683,
+      "rmse": 7.897,
+      "r2": 0.6874
     },
     "ridge": {
-      "mae": 4.636,
-      "rmse": 6.451,
-      "r2": 0.8262
+      "mae": 4.57,
+      "rmse": 6.139,
+      "r2": 0.8111
     },
     "random_forest": {
-      "mae": 1.443,
-      "rmse": 2.162,
-      "r2": 0.9805
+      "mae": 2.059,
+      "rmse": 2.76,
+      "r2": 0.9618
     },
     "gradient_boosting": {
-      "mae": 2.87,
-      "rmse": 3.827,
-      "r2": 0.9389
+      "mae": 3.183,
+      "rmse": 4.046,
+      "r2": 0.918
     }
   },
   "transbordos": {
     "baseline_frecuente": {
-      "accuracy": 0.2122,
-      "f1_macro": 0.0318,
-      "mae": 1.729
+      "accuracy": 0.2503,
+      "f1_macro": 0.04,
+      "mae": 1.677
     },
     "logreg": {
-      "accuracy": 0.4494,
-      "f1_macro": 0.3455,
-      "mae": 0.978
+      "accuracy": 0.4513,
+      "f1_macro": 0.3438,
+      "mae": 1.059
     },
     "knn": {
-      "accuracy": 0.7372,
-      "f1_macro": 0.6553,
-      "mae": 0.313
+      "accuracy": 0.661,
+      "f1_macro": 0.6983,
+      "mae": 0.433
     },
     "random_forest": {
-      "accuracy": 0.9001,
-      "f1_macro": 0.7998,
-      "mae": 0.11
+      "accuracy": 0.7291,
+      "f1_macro": 0.7658,
+      "mae": 0.303
     }
   },
   "mejor_tiempo": "random_forest",
-  "mejor_transbordos": "random_forest"
+  "mejor_transbordos": "random_forest",
+  "mejor_seleccionado_por": "cv_train"
 }

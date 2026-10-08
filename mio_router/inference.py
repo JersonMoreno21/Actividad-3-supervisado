@@ -8,9 +8,12 @@ Proporciona:
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .graph import construir_grafo, dijkstra
+from .loaders import slugificar
 from .parser import KnowledgeBase, Fact, Rule, extract_relations
 
 
@@ -39,6 +42,16 @@ class Substitution:
         """Obtener valor con default."""
         return self.vars_.get(key, default)
 
+    def items(self):
+        """Itera (variable, valor). Evita AttributeError al combinar soluciones."""
+        return self.vars_.items()
+
+    def __len__(self) -> int:
+        return len(self.vars_)
+
+    def __eq__(self, other: Any) -> bool:
+        return isinstance(other, Substitution) and self.vars_ == other.vars_
+
 
 def _normalize_var(t: Any) -> Any:
     """Asegura que las variables sean strings consistentes."""
@@ -48,9 +61,10 @@ def _normalize_var(t: Any) -> Any:
 
 
 def _is_var(t: Any) -> bool:
-    """Un string Mayúscula es considerado variable."""
+    """Un string Mayúscula (o que empieza por '_') es considerado variable."""
     if isinstance(t, str):
-        return t[0].isupper() or t.startswith("_")
+        # `bool(t)` evita IndexError con argumentos vacíos ('foo().')
+        return bool(t) and (t[0].isupper() or t[0] == "_")
     return False
 
 
@@ -118,6 +132,11 @@ def unificar(término1: Any, término2: Any, sigma: Optional[Substitution] = Non
 def _unify_var(var: str, term: Any, sigma: Substitution) -> Substitution:
     """Unifica una variable con un término, actualizando la sustitución."""
     var = var.strip()
+    # '_' es el comodín anónimo de Prolog: NUNCA se ata, para que pueda
+    # aparecer varias veces en el mismo predicado sin exigir igualdad
+    # (conecta(X, Y, _, _) no debe exigir que ruta y minutos sean iguales).
+    if var == "_":
+        return sigma
     # Si la variable ya está mapeada en sigma
     if var in sigma:
         return unificar(sigma[var], term, sigma)
@@ -187,9 +206,9 @@ def _derivar_hecho(query: Tuple[str, ...], relations: Dict[str, Any], historial:
             if sigma is not None:
                 sol = sigma_to_dict(sigma)
                 soluciones.append(sol)
-                historial.append({
+                _registrar(historial, {
                     "regla": f"hecho_{pred}",
-                    "descripcion": f"Hecho directo: {fact.predicate}({', '.join(fact.args)})",
+                    "descripcion": f"Hecho directo: {fact.predicate}({_formatear_args(fact.args)})",
                 })
     return soluciones
 
@@ -214,6 +233,166 @@ def _derivar_regla(
     return soluciones
 
 
+def _aplicar_termino(termino: Any, bindings: Dict[str, Any]) -> Any:
+    """Sigue la cadena de sustitución hasta llegar a un término resuelto."""
+    visto: Set[str] = set()
+    while isinstance(termino, str) and termino in bindings and termino not in visto:
+        visto.add(termino)
+        termino = bindings[termino]
+    return termino
+
+
+def _aplicar_args(args: Tuple[str, ...], bindings: Dict[str, Any]) -> Tuple[str, ...]:
+    """Instancia los argumentos de un átomo con las sustituciones conocidas."""
+    return tuple(_aplicar_termino(a, bindings) for a in args)
+
+
+def _combinar(sol: Dict[str, Any], nuevo: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Fusiona dos sustituciones; devuelve None si se contradicen."""
+    combinado = dict(sol)
+    for k, v in nuevo.items():
+        v_resuelto = _aplicar_termino(v, combinado)
+        if k in combinado:
+            existente = _aplicar_termino(combinado[k], nuevo)
+            if existente != v_resuelto:
+                return None
+        combinado[k] = v_resuelto
+    for k in list(combinado):
+        combinado[k] = _aplicar_termino(combinado[k], nuevo)
+    return combinado
+
+
+def _formatear_args(args: Any) -> str:
+    return ", ".join(str(a) for a in args)
+
+
+def _formatear_cuerpo(body_atoms: Any) -> str:
+    return ", ".join(f"{pred}({_formatear_args(args)})" for pred, args in body_atoms)
+
+
+def _registrar(historial: List[Dict[str, str]], entrada: Dict[str, str]) -> None:
+    """Añade una entrada al historial acotando su tamaño.
+
+    Una consulta con variables puede unificar miles de hechos; sin esta
+    cota, `explicar_historial` imprimiría miles de líneas.
+    """
+    if len(historial) < 100:
+        historial.append(entrada)
+
+
+_CONTADOR_REGLAS = itertools.count()
+
+
+def _renombrar_regla(rule: Rule, prefijo: str) -> Tuple[Tuple[str, ...], Any, Dict[str, str]]:
+    """Estandariza las variables de la regla para cada aplicación.
+
+    Sin esto, si la query usa la misma letra que la regla
+    (`viaje_directo(menga, X, R)` frente a `viaje_directo(X, Y, R)`), ambas
+    variables colisionan y la regla acaba exigiendo cosas imposibles.
+    """
+    mapeo: Dict[str, str] = {}
+
+    def ren(t: str) -> str:
+        if isinstance(t, str) and _is_var(t) and t != "_":
+            if t not in mapeo:
+                mapeo[t] = prefijo + t
+            return mapeo[t]
+        return t
+
+    cabeza = tuple(ren(a) for a in rule.head_args)
+    cuerpo = tuple(
+        (pred, tuple(ren(a) for a in args)) for pred, args in rule.body_atoms
+    )
+    return cabeza, cuerpo, mapeo
+
+
+def _proyectar(
+    sol: Dict[str, Any], mapeo: Dict[str, str], prefijo: str
+) -> Dict[str, Any]:
+    """Devuelve la solución con las variables de la regla en su nombre original.
+
+    Los vínculos que ya estaban en la solución (los de la consulta) tienen
+    prioridad sobre los internos de la regla.
+    """
+    traducido = {renombrado: original for original, renombrado in mapeo.items()}
+
+    def valor(v: Any) -> Any:
+        if isinstance(v, str) and v.startswith(prefijo):
+            return traducido.get(v, v)
+        return v
+
+    salida: Dict[str, Any] = {}
+    for k, v in sol.items():
+        if k not in traducido:  # clave que no viene de la regla (la consulta)
+            salida[k] = valor(v)
+    for k, v in sol.items():
+        if k in traducido and traducido[k] not in salida:
+            salida[traducido[k]] = valor(v)
+    return {k: _aplicar_termino(v, salida) for k, v in salida.items()}
+
+
+def _resolver_atomo(
+    atom_pred: str,
+    atom_args: Tuple[str, ...],
+    relations: Dict[str, Any],
+    historial: List[Dict[str, str]],
+    depth: int,
+    max_depth: int,
+) -> List[Dict[str, Any]]:
+    """Resuelve un átomo: primero contra los hechos, luego con las reglas.
+
+    Retorna la lista de sustituciones que hacen verdadero el átomo.
+    """
+    soluciones: List[Dict[str, Any]] = []
+
+    for fact in relations.get("facts", []):
+        if fact.predicate != atom_pred:
+            continue
+        sigma = unificar(fact.args, atom_args)
+        if sigma is not None:
+            soluciones.append(dict(sigma_to_dict(sigma)))
+
+    if depth >= max_depth:
+        return soluciones
+
+    for rule in relations.get("rules", []):
+        if rule.head_predicate != atom_pred:
+            continue
+        soluciones.extend(
+            _aplicar_regla(rule, (atom_pred,) + atom_args, relations,
+                           historial, depth=depth, max_depth=max_depth)
+        )
+
+    return soluciones
+
+
+def _resolver_cuerpo(
+    rule: Rule,
+    base: Dict[str, Any],
+    relations: Dict[str, Any],
+    historial: List[Dict[str, str]],
+    depth: int,
+    max_depth: int,
+) -> List[Dict[str, Any]]:
+    """Satisface los átomos del cuerpo de izquierda a derecha (conjunción)."""
+    soluciones: List[Dict[str, Any]] = [dict(base)]
+    for atom_pred, atom_args in rule.body_atoms:
+        siguientes: List[Dict[str, Any]] = []
+        for sol in soluciones:
+            instanciados = _aplicar_args(atom_args, sol)
+            for parcial in _resolver_atomo(
+                atom_pred, instanciados, relations, historial,
+                depth=depth + 1, max_depth=max_depth,
+            ):
+                combinado = _combinar(sol, parcial)
+                if combinado is not None:
+                    siguientes.append(combinado)
+        soluciones = siguientes
+        if not soluciones:
+            break
+    return soluciones
+
+
 def _aplicar_regla(
     rule: Rule,
     query: Tuple[str, ...],
@@ -226,72 +405,38 @@ def _aplicar_regla(
     if depth >= max_depth:
         return []
 
-    pred = query[0]
-    args_query = query[1:]
+    # Estandarizar variables: cada aplicación usa las suyas propias
+    prefijo = f"__r{next(_CONTADOR_REGLAS)}_"
+    cabeza, cuerpo, mapeo = _renombrar_regla(rule, prefijo)
 
-    # La cabeza de la regla tiene sus propios argumentos (pueden tener variables)
-    head_args = rule.head_args
-
-    # Intentar unificar la cabeza de la regla con la query
-    sigma = unificar(head_args, args_query)
+    # Unificar la cabeza de la regla con la query
+    sigma = unificar(cabeza, query[1:])
     if sigma is None:
         return []
 
-    # Aplicar sustitución a los argumentos de la cabeza
-    head_args_inst = tuple(sigma.get(a, a) for a in head_args)
+    regla_inst = Rule(
+        head_predicate=rule.head_predicate, head_args=cabeza, body_atoms=cuerpo
+    )
 
-    # Historial: registramos la regla disparada
-    historial.append({
-        "regla": rule.head_predicate,
-        "descripcion": f"Aplicando regla: {rule.head_predicate}({', '.join(head_args_inst)}) :- {', '.join(['(' + ', '.join(a) + ')' for a in rule.body_atoms])}",
-    })
+    # Satisfacer el cuerpo (condiciones previas) y combinar con la cabeza
+    soluciones = _resolver_cuerpo(
+        regla_inst, dict(sigma_to_dict(sigma)), relations, historial,
+        depth=depth, max_depth=max_depth,
+    )
 
-    # Ahora satisfacer el cuerpo de la regla (condiciones previas)
-    # El cuerpo es una tupla de (predicado, (arg1, arg2, ...))
-    soluciones_cuerpo: List[Dict[str, Any]] = [{}]
+    if soluciones:
+        # Solo se registra la regla si de verdad aportó alguna solución
+        _registrar(historial, {
+            "regla": rule.head_predicate,
+            "descripcion": (
+                f"Aplicando regla: {rule.head_predicate}"
+                f"({_formatear_args(_aplicar_args(cabeza, soluciones[0]))})"
+                f" :- {_formatear_cuerpo(cuerpo)}"
+            ).replace(prefijo, ""),
+        })
+        soluciones = [_proyectar(sol, mapeo, prefijo) for sol in soluciones]
 
-    for atom_pred, atom_args in rule.body_atoms:
-        # Instanciar los argumentos con la sustitución actual
-        inst_args = tuple(sigma.get(a, a) if isinstance(a, str) else a for a in atom_args)
-        # También aplicamos las sustituciones acumuladas
-        for prev_sol in list(soluciones_cuerpo):
-            combined = prev_sol.copy()
-            # Unificar con el átomo del cuerpo
-            sigma_atom = unificar(inst_args, atom_args)
-            if sigma_atom is None:
-                soluciones_cuerpo.remove(prev_sol)
-                continue
-            combined.update(sigma_to_dict(sigma_atom))
-            soluciones_cuerpo = [combined]
-            # Verificar si el átomo del cuerpo es un hecho conocido
-            atom_pred_lower = atom_pred.lower()
-            atom_args_tuple = tuple(inst_args)
-            # Buscar en hechos
-            fact_match = False
-            for fact in relations.get("facts", []):
-                if fact.predicate == atom_pred_lower:
-                    # Verificar si los argumentos coinciden (considerando variables)
-                    sigma_fact = unificar(fact.args, atom_args_tuple)
-                    if sigma_fact is not None:
-                        combined.update(sigma_to_dict(sigma_fact))
-                        fact_match = True
-                        break
-            if not fact_match:
-                # Si no es un hecho directo, descarte esta rama
-                soluciones_cuerpo.remove(combined)
-
-    # Combinar soluciones del cuerpo con la sustitución de la cabeza
-    soluciones_finales = []
-    for sol in soluciones_cuerpo:
-        # Combinar con sigma de la cabeza
-        final_sol = sol.copy()
-        for k, v in sigma.items():
-            final_sol[k] = v
-        # Verificar que las variables de la query estén resueltas
-        query_inst = tuple(sigma.get(a, a) if isinstance(a, str) else a for a in args_query)
-        soluciones_finales.append(final_sol)
-
-    return soluciones_finales
+    return soluciones
 
 
 # ---------------------------------------------------------------------------
@@ -336,34 +481,92 @@ def derivar_viaje_directo(origen: str, destino: str, relations: Dict[str, Any]) 
     return soluciones
 
 
+def _resolver_nodo(nombre: str, relations: Dict[str, Any]) -> str:
+    """Resuelve un nombre visible o slug al nodo del grafo (si existe)."""
+    estaciones = relations.get("estaciones", {})
+    if nombre in estaciones:
+        return nombre
+    objetivo = slugificar(nombre)
+    if objetivo in estaciones:
+        return objetivo
+    for eid, value in estaciones.items():
+        if isinstance(value, (tuple, list)) and value:
+            if slugificar(str(value[0])) == objetivo:
+                return str(value[0])
+    return nombre
+
+
 def derivar_requiere_transbordo(
     origen: str,
     destino: str,
     relations: Dict[str, Any],
 ) -> List[Dict[str, Any]]:
-    """Deriva rutas que requieren transbordo entre dos estaciones."""
+    """Deriva los transbordos que usa el viaje origen->destino.
 
-    soluciones = []
+    Historial de la función:
+      1. Devolvía TODOS los transbordos de la KB (ignoraba origen/destino).
+      2. Filtraba por "estación alcanzable desde ambos extremos": en una red
+         conectada eso seguía siendo casi todos (95 transbordos para dos
+         estaciones vecinas).
+      3. Ahora se recorre el camino de tiempo mínimo (mismo Dijkstra que usa
+         la CLI) y solo se devuelven los transbordos de las aristas de
+         caminata que ese camino cruza, con la pareja de corredores que
+         efectivamente se cambia.
+    """
+    origen_n = _resolver_nodo(origen, relations)
+    destino_n = _resolver_nodo(destino, relations)
+    if origen_n == destino_n:
+        return []
+
+    ruta = dijkstra(construir_grafo(relations), origen_n, destino_n)
+    if ruta is None:
+        return []
+    _, tramos = ruta
+
+    # nodo[0] = origen; nodo[i] = destino del tramo i-1
+    nodos = [origen_n] + [t[0] for t in tramos]
+    rutas = [t[1] for t in tramos]
+
+    soluciones: List[Dict[str, Any]] = []
+    vistos: Set[Tuple[str, str, str, str]] = set()
     transbordos = relations.get("transbordo", {})
 
-    # Buscar transbordos explícitos definidos en la KB
-    for key, valor in transbordos.items():
-        if len(key) >= 4:
-            estacion_tb = key[0]
-            ruta1 = key[1]
-            ruta2 = key[2]
-            minutos_espera = key[3]
-        else:
+    def _emitir(estacion: str, antes: Optional[str], despues: Optional[str]) -> None:
+        """Añade los hechos transbordo/4 de `estacion` compatibles con el
+        corredor por el que se llega y por el que se sale."""
+        # Sin contexto (inicio/fin del camino o tramo de caminata encadenado)
+        # se acepta cualquier pareja de corredores de esa estación.
+        sin_contexto = (
+            antes is None or despues is None
+            or antes == "transbordo" or despues == "transbordo"
+        )
+        for key in transbordos:
+            if len(key) < 4 or key[0] != estacion:
+                continue
+            estacion_tb, ruta1, ruta2, min_espera = key[:4]
+            if not sin_contexto and {ruta1, ruta2} != {antes, despues}:
+                continue
+            if key in vistos:
+                continue
+            vistos.add(key)
+            soluciones.append({
+                "origen": origen_n,
+                "destino": destino_n,
+                "ruta1": ruta1,
+                "ruta2": ruta2,
+                "estacion_transbordo": estacion_tb,
+                "minutos_espera": min_espera,
+                "tipo": "transbordo_explicito",
+            })
+
+    for i, codigo in enumerate(rutas):
+        if codigo != "transbordo":
             continue
-        soluciones.append({
-            "origen": origen,
-            "destino": destino,
-            "ruta1": ruta1,
-            "ruta2": ruta2,
-            "estacion_transbordo": estacion_tb,
-            "minutos_espera": minutos_espera,
-            "tipo": "transbordo_explicito",
-        })
+        a, b = nodos[i], nodos[i + 1]
+        anterior = rutas[i - 1] if i > 0 else None
+        posterior = rutas[i + 1] if i + 1 < len(rutas) else None
+        _emitir(a, anterior, posterior)
+        _emitir(b, posterior, anterior)
 
     return soluciones
 

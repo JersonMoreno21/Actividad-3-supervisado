@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,7 +14,10 @@ from .parser import parse_kb, extract_relations
 from .graph import construir_grafo, encontrar_ruta as buscar_en_grafo
 from .builder import construir_relations, REGLAS_PATH
 
-KB_PATH = "kb/mio.pl"  # KB de hechos legacy (fallback / tests)
+# Anclado a la raíz del repo (no depende del CWD)
+KB_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "kb", "mio.pl"
+)  # KB de hechos legacy (fallback / tests)
 
 # Caché global de relations (dataset por defecto)
 _relations_cache: Optional[Dict[str, Any]] = None
@@ -78,14 +82,14 @@ def _cargar_normalizador() -> None:
 
 
 def _quitar_tildes(texto: str) -> str:
-    """Quita tildes de un texto para comparación tolerante."""
-    replacements = {
-        "á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u",
-        "Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U",
-    }
-    for til, sin_tilde in replacements.items():
-        texto = texto.replace(til, sin_tilde)
-    return texto
+    """Quita tildes de un texto para comparación tolerante.
+
+    Delega en `loaders.quitar_tildes`, que además normaliza ñ -> n: sin eso
+    'Cañaveralejo' no producía el nodo `zona_canaveralejo` real del grafo.
+    """
+    from .loaders import quitar_tildes
+
+    return quitar_tildes(texto)
 
 
 def _normalizar_nombre(nombre: str) -> str:
@@ -135,9 +139,12 @@ def _buscar_estacion(nombre_busqueda: str) -> Optional[str]:
                                or nombre_norm in _normalizar_nombre(slug)):
             return slug
     # también matchear por nombre de zona legible
+    from .loaders import slugificar
+
     for zona in set(e.zona_integration for e in estaciones_list if e.zona_integration):
         if _normalizar_nombre(zona) == nombre_norm:
-            return "zona_" + _normalizar_nombre(zona).replace(" ", "_")
+            # Mismo cálculo que builder: "zona_" + slugificar(zona)
+            return "zona_" + slugificar(zona)
 
     # 3) Parada externa exacta (dirección o slug)
     for p in paradas_list:
@@ -225,11 +232,11 @@ def _nombre_legible(slug: str) -> str:
     if slug.startswith("zona_"):
         zona = slug[len("zona_"):]
         # Buscar nombre original de la zona
+        from .loaders import slugificar
+
         for e in relations.get("estaciones_list", []):
-            if e.zona_integration:
-                z_norm = _normalizar_nombre(e.zona_integration).replace(" ", "_")
-                if z_norm == zona:
-                    return f"Zona {e.zona_integration}"
+            if e.zona_integration and slugificar(e.zona_integration) == zona:
+                return f"Zona {e.zona_integration}"
         return f"Zona {zona.replace('_', ' ').title()}"
     for p in relations.get("paradas_list", []):
         if p.slug == slug:
@@ -461,16 +468,23 @@ def main() -> None:
         _cargar_normalizador()
         relations = _cargar_relations()
         estaciones_list = relations.get("estaciones_list") or []
+        estaciones = sorted(
+            relations.get("estaciones", {}).items(), key=lambda x: str(x[1][0])
+        )
+        # Lista de nombres para sugerir si el usuario escribe algo mal.
+        # Se calcula SIEMPRE (antes solo existía si estaciones_list estaba
+        # vacía) porque el bucle de abajo la usa al no encontrar la estación.
+        nombres_disponibles: List[str] = []
         if estaciones_list:
             muestra = sorted(estaciones_list, key=lambda x: x.nombre.lower())[:15]
             for e in muestra:
                 print(f"  [{e.tipo}] {e.nombre}")
+            nombres_disponibles = sorted(e.nombre for e in estaciones_list)
         else:
-            estaciones = sorted(
-                relations.get("estaciones", {}).items(), key=lambda x: x[1][0]
-            )
-            for eid, (nombre, tipo, zona) in estaciones[:15]:
+            for eid, value in estaciones[:15]:
+                nombre, tipo = str(value[0]), str(value[1])
                 print(f"  [{tipo}] {nombre}")
+            nombres_disponibles = [str(v[0]) for _, v in estaciones]
         print("... (use --origen y --destino para buscar una ruta)")
         print("Escriba 'salir' para terminar.\n")
 
@@ -487,7 +501,7 @@ def main() -> None:
 
             if not ori_norm or not des_norm:
                 print("[ERROR] Estacion no encontrada. Intente con nombres como:")
-                for nombre, _, _ in estaciones[:10]:
+                for nombre in nombres_disponibles[:10]:
                     print(f"  - {nombre}")
                 continue
 

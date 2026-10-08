@@ -39,7 +39,7 @@ def parse_kb(file_path: str) -> KnowledgeBase:
     Ignora comentarios (líneas que comienzan con %) y líneas en blanco.
     Separa hechos (sin :-) de reglas (con :-).
     """
-    with open(file_path, "r", encoding="utf-8") as f:
+    with open(file_path, "r", encoding="utf-8-sig") as f:
         lines = f.readlines()
 
     facts = []
@@ -47,35 +47,103 @@ def parse_kb(file_path: str) -> KnowledgeBase:
 
     for line in lines:
         line = line.strip()
-        if not line or line.startswith("%"):
+        if not line:
             continue
 
-        # Normalizar: quitar puntos finales
-        line = line.rstrip(".")
+        # Comentario '%' hasta fin de línea (dentro de una regla también)
+        line = line.split("%", 1)[0].strip()
+        if not line:
+            continue
 
-        # Intentar parsear como regla (contiene ":-")
-        if ":-" in line:
-            rule = _parse_rule(line)
-            if rule is not None:
-                rules.append(rule)
-        else:
-            # Es un hecho
-            fact = _parse_fact(line)
-            if fact is not None:
-                facts.append(fact)
+        # Un archivo puede traer varias sentencias en una línea:
+        # `hecho(1). otro(2).` Se parte por '.' fuera de paréntesis (los
+        # puntos decimales como 3.14 están dentro de un paréntesis y no
+        # se tocan). Antes se usaba rstrip("."), que comía TODOS los puntos.
+        for sentencia in _partir(line, "."):
+            sentencia = sentencia.strip()
+            if not sentencia:
+                continue
+
+            # Intentar parsear como regla (contiene ":-")
+            if ":-" in sentencia:
+                rule = _parse_rule(sentencia)
+                if rule is not None:
+                    rules.append(rule)
+            else:
+                # Es un hecho
+                fact = _parse_fact(sentencia)
+                if fact is not None:
+                    facts.append(fact)
 
     return KnowledgeBase(facts=tuple(facts), rules=tuple(rules))
 
 
+def _partir(texto: str, separadores: str) -> List[str]:
+    """Divide `texto` en las posiciones de `separadores` a profundidad 0.
+
+    Respeta los paréntesis: `conecta(X, Y, _, _)` no se trocea en la coma
+    que lleva dentro. Sin esto, el cuerpo de todas las reglas de
+    `kb/reglas.pl` se parseaba vacío y las reglas nunca se disparaban.
+    """
+    partes: List[str] = []
+    actual: List[str] = []
+    profundidad = 0
+    for ch in texto:
+        if ch == "(":
+            profundidad += 1
+        elif ch == ")":
+            profundidad -= 1
+        if profundidad <= 0 and ch in separadores:
+            partes.append("".join(actual))
+            actual = []
+            continue
+        actual.append(ch)
+    partes.append("".join(actual))
+    return partes
+
+
+def _es_variable(token: str) -> bool:
+    """Una variable Prolog empieza por mayúscula o por '_' (X, Y, _Cons)."""
+    return bool(token) and (token[0].isupper() or token[0] == "_")
+
+
+def _parse_args(texto: str) -> Tuple[str, ...]:
+    """Parsea la lista de argumentos de un predicado.
+
+    Conserva las variables tal cual (X, Y, _) y normaliza las constantes a
+    minúsculas (compatibilidad con la KB legacy). Antes todo se pasaba por
+    `.lower()`, lo que convertía X e Y en constantes y hacía que ningún
+    predicado con variables pudiera unificarse.
+    """
+    args: List[str] = []
+    for parte in _partir(texto, ","):
+        token = parte.strip()
+        if _es_variable(token):
+            args.append(token)
+        else:
+            # Argumento vacío ('foo().') se conserva como cadena vacía
+            args.append(token.lower())
+    return tuple(args)
+
+
+_ATOM_RE = re.compile(r"^([a-z_][a-z0-9_]*)\((.*)\)$", re.IGNORECASE)
+
+
+def _parse_atom(texto: str) -> Optional[Tuple[str, Tuple[str, ...]]]:
+    """Parsea `pred(arg1, arg2, ...)` → (predicado, argumentos)."""
+    match = _ATOM_RE.match(texto.strip())
+    if not match:
+        return None
+    return match.group(1).lower(), _parse_args(match.group(2))
+
+
 def _parse_fact(line: str) -> Optional[Fact]:
     """Parsea un hecho estilo predicado(arg1, arg2, ...)."""
-    # Patrón: nombre(arg1, arg2, ...) sin ":-"
-    match = re.match(r'^([a-z_][a-z0-9_]*)\((.*)\)', line, re.IGNORECASE)
-    if match:
-        predicate = match.group(1).lower()
-        args = tuple(a.strip().lower() for a in match.group(2).split(","))
-        return Fact(predicate=predicate, args=args)
-    return None
+    atom = _parse_atom(line)
+    if atom is None:
+        return None
+    predicate, args = atom
+    return Fact(predicate=predicate, args=args)
 
 
 def _parse_rule(line: str) -> Optional[Rule]:
@@ -97,21 +165,19 @@ def _parse_rule(line: str) -> Optional[Rule]:
     if head is None:
         return None
 
-    # Parsear cuerpo: separado por ',' (and) o ';' (or) — soportar ambos
-    body_atoms = []
+    # Parsear cuerpo: separado por ',' (and) o ';' (or) — soportar ambos,
+    # siempre a profundidad 0 para no romper predicados con varias comas.
+    body_atoms: List[Tuple[str, Tuple[str, ...]]] = []
     if body_str:
-        # Reemplazar ';' por ',' para tratarlos como lista de átomos
         # (en este motor la semántica es: todos los átomos deben satisfacerse,
         # es decir conjunción — más cercano a Prolog estándar ',')
-        normalized = body_str.replace(";", ",")
-        for atom_str in normalized.split(","):
+        for atom_str in _partir(body_str, ",;"):
             atom_str = atom_str.strip()
-            if atom_str:
-                match = re.match(r'^([a-z_][a-z0-9_]*)\((.*)\)', atom_str, re.IGNORECASE)
-                if match:
-                    pred = match.group(1).lower()
-                    args = tuple(a.strip().lower() for a in match.group(2).split(","))
-                    body_atoms.append((pred, args))
+            if not atom_str:
+                continue
+            atom = _parse_atom(atom_str)
+            if atom is not None:
+                body_atoms.append(atom)
 
     return Rule(
         head_predicate=head.predicate,

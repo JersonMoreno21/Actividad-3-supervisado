@@ -18,7 +18,10 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
-DATA_DIR = os.path.join("data")
+# Las rutas se anclan a la raíz del repositorio (padre del paquete) para que
+# el código funcione aunque se ejecute desde otro directorio.
+_RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(_RAIZ, "data")
 ESTACIONES_CSV = os.path.join(DATA_DIR, "Estaciones_de_Parada_2025.csv")
 PARADAS_CSV = os.path.join(DATA_DIR, "ptosparadas.csv")
 

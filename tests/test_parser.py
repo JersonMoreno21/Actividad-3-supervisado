@@ -5,14 +5,21 @@ import pytest
 from mio_router.parser import parse_kb, extract_relations
 
 
+@pytest.fixture(scope="module")
+def kb_reglas():
+    """kb/reglas.pl: 8 reglas con cuerpo (es el archivo que las pruebas de
+    inferencia usan de verdad)."""
+    return parse_kb("kb/reglas.pl")
+
+
 class TestParser:
     """Tests para el parser de hechos y reglas."""
 
     def test_parser_lee_hechos(self):
         """Test que el parser lee correctamente los hechos de la KB."""
         kb = parse_kb("kb/mio.pl")
-        # Debería tener 20 estaciones
-        assert len(kb.facts) > 0
+        # la KB legacy tiene ~95 hechos (estaciones, rutas, conecta, ...)
+        assert len(kb.facts) >= 90
 
     def test_parser_estaciones(self):
         """Test que se extraen correctamente las estaciones."""
@@ -102,3 +109,53 @@ class TestParserSpecificFacts:
             f.predicate == "coordenadas" for f in kb.facts
         )
         assert found
+
+
+class TestParserDeReglas:
+    """kb/reglas.pl: el parser debe conservar cuerpo y variables.
+
+    Regresión: el cuerpo se partía por ',' ignorando la profundidad de
+    paréntesis y se pasaba a minúsculas, así que las variables (X, Y) de
+    kb/reglas.pl morían y ninguna regla podía dispararse.
+    """
+
+    def test_las_ocho_reglas_estan(self, kb_reglas):
+        assert len(kb_reglas.rules) == 8
+        assert len(kb_reglas.facts) == 0
+
+    @pytest.mark.parametrize(
+        "predicado,cuerpo_esperado",
+        [
+            ("conectado", [("conecta", ("X", "Y", "_", "_"))]),
+            ("viaje_directo", [("conecta", ("X", "Y", "R", "_"))]),
+            (
+                "alcanzable_dos_saltos",
+                [("conecta", ("X", "Z", "_", "_")),
+                 ("conecta", ("Z", "Y", "_", "_"))],
+            ),
+            (
+                "misma_zona",
+                [("estacion", ("_", "X", "_", "Z")),
+                 ("estacion", ("_", "Y", "_", "Z"))],
+            ),
+        ],
+    )
+    def test_cuerpo_y_variables(self, kb_reglas, predicado, cuerpo_esperado):
+        regla = next(r for r in kb_reglas.rules if r.head_predicate == predicado)
+        assert list(regla.body_atoms) == list(cuerpo_esperado)
+
+    def test_variables_mayusculas_intactas(self, kb_reglas):
+        """Regresión: `.lower()` en los argumentos convertía X en la constante x."""
+        for r in kb_reglas.rules:
+            cabeza = [a for a in r.head_args if a[:1].isupper()]
+            cuerpo = [a for _, args in r.body_atoms for a in args if a[:1].isupper()]
+            assert cabeza, f"{r.head_predicate} sin variables en la cabeza"
+            assert cuerpo, f"{r.head_predicate}: cuerpo parseado sin variables"
+            for v in cabeza:
+                assert v.lower() not in cuerpo
+
+    def test_comentarios_ignorados(self, kb_reglas):
+        for r in kb_reglas.rules:
+            assert not r.head_predicate.startswith("%")
+            for pred, _ in r.body_atoms:
+                assert not pred.startswith("%")

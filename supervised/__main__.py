@@ -19,6 +19,7 @@ from typing import Any, List, Optional
 from .dataset import DATASET_CSV, cargar_dataset, generar_dataset
 from .predict import predecir
 from .train import (
+    CV_FOLDS,
     METRICS_JSON,
     MODELS_DIR,
     entrenar,
@@ -41,9 +42,13 @@ def _cmd_entrenar(args: argparse.Namespace) -> int:
         dir_modelos=args.dir_modelos,
         muestra=args.muestra,
         verbose=args.verbose,
+        cv_folds=0 if args.sin_cv else CV_FOLDS,
     )
     print(resumen(metrics))
     if not args.sin_guardar:
+        if args.muestra:
+            print(f"\n[AVISO] --muestra {args.muestra}: el modelo y las métricas "
+                  f"guardados se entrenaron SOLO con esa muestra.")
         print(f"\nModelo: {os.path.join(args.dir_modelos, 'model.joblib')}")
         print(f"Métricas: {os.path.join(args.dir_modelos, 'metrics.json')}")
     return 0
@@ -58,10 +63,14 @@ def _cmd_predecir(args: argparse.Namespace) -> int:
     print(f"[OK] Viaje: {res['origen']} -> {res['destino']}")
     print(f"Predicción (modelo {res['modelos']['tiempo']}): "
           f"{res['tiempo_pred']} min, {res['transbordos_pred']} transbordos")
-    print(f"Real (Dijkstra)  : {res['tiempo_real']} min, "
-          f"{res['transbordos_real']} transbordos")
-    print(f"Error            : {res['error_tiempo']} min, "
-          f"{res['error_transbordos']} transbordos")
+    if res["sin_ruta"]:
+        print("Real (Dijkstra)  : sin ruta entre esas estaciones")
+        print("Error            : n/d")
+    else:
+        print(f"Real (Dijkstra)  : {res['tiempo_real']} min, "
+              f"{res['transbordos_real']} transbordos")
+        print(f"Error            : {res['error_tiempo']} min, "
+              f"{res['error_transbordos']} transbordos")
     if args.todos:
         print("\nPor modelo:")
         for n, v in sorted(res["por_modelo"]["tiempo"].items()):
@@ -101,11 +110,15 @@ def _cmd_listar(args: argparse.Namespace) -> int:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    # Consolas Windows (cp1252): no troncar con caracteres UTF-8 como '→'
+    # Consolas Windows (cp1252): salir en UTF-8 para que '→' o 'ñ' no se
+    # rompan cuando la salida va pipeada (los tests leen UTF-8).
     for stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(stream, "reconfigure", None)
         if reconfigure is not None:
-            reconfigure(errors="replace")
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
 
     parser = argparse.ArgumentParser(
         prog="python -m supervised",
@@ -124,6 +137,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--muestra", type=int, default=None,
                    help="Entrena con N filas al azar (para pruebas rápidas)")
     p.add_argument("--sin-guardar", action="store_true")
+    p.add_argument("--sin-cv", action="store_true",
+                   help="Omite la validación cruzada (selección del mejor modelo)")
     p.add_argument("-v", "--verbose", action="store_true")
     p.set_defaults(func=_cmd_entrenar)
 

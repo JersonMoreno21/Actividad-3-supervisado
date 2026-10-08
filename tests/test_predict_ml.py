@@ -83,3 +83,54 @@ def test_predecir_misma_estacion(bundle):
 def test_predecir_estacion_inexistente(bundle):
     with pytest.raises(ValueError, match="desconocida"):
         predecir("NoExiste", "Univalle", bundle=bundle)
+
+
+def test_predecir_usa_el_grafo_que_se_le_pasa(ctx, bundle):
+    """Regresión: pasar solo `g` (o solo `meta`) hacía que ambos se
+    reconstruyeran y el grafo del llamante se ignorara.
+
+    Aquí el grafo vacío no tiene camino, así que el resultado tiene que ser
+    `sin_ruta` en vez de la ruta que tendría el grafo real.
+    """
+    from mio_router.graph import Graph
+
+    g = Graph()
+    g.adj = {"univalle": [], "chiminangos": []}
+    res = predecir("univalle", "chiminangos", bundle=bundle, g=g)
+
+    assert res["sin_ruta"] is True
+    assert res["tiempo_real"] is None
+    assert res["transbordos_real"] is None
+    assert res["error_tiempo"] is None
+    assert res["tiempo_pred"] >= 0
+
+
+def test_predecir_rechaza_features_desactualizadas(ctx, bundle):
+    _, g, meta = ctx
+    otro = dict(bundle)
+    otro["features"] = list(bundle["features"])[:-1]
+    with pytest.raises(ValueError, match="Reentrena"):
+        predecir("univalle", "chiminangos", bundle=otro, g=g, meta=meta)
+
+
+def test_predecir_no_devuelve_minutos_negativos(ctx, bundle):
+    """Un modelo lineal puede predecir minutos negativos: se recorta a 0."""
+    _, g, meta = ctx
+
+    class _Modelo:
+        def __init__(self, valor):
+            self.valor = valor
+
+        def predict(self, X):
+            import numpy as np
+            return np.array([self.valor], dtype=float)
+
+    otro = dict(bundle)
+    otro["modelos_tiempo"] = {"neg": _Modelo(-5.0)}
+    otro["mejor_tiempo"] = "neg"
+    otro["modelos_transbordos"] = {"neg": _Modelo(-1.0)}
+    otro["mejor_transbordos"] = "neg"
+
+    res = predecir("univalle", "chiminangos", bundle=otro, g=g, meta=meta)
+    assert res["tiempo_pred"] == 0
+    assert res["transbordos_pred"] == 0

@@ -56,8 +56,16 @@ def predecir(
     meta: Optional[MetaFeatures] = None,
 ) -> Dict[str, Any]:
     """Predice tiempo y transbordos de un viaje y los contrasta con Dijkstra."""
+    # Solo se reconstruye lo que falte: antes, pasar solo `g` o solo `meta`
+    # hacía que ambos se reconstruyeran y el grafo del llamante se ignorara.
     if meta is None or g is None:
-        relations, g, meta = preparar(relations)
+        rel_local, g_local, meta_local = preparar(relations)
+        if relations is None:
+            relations = rel_local
+        if g is None:
+            g = g_local
+        if meta is None:
+            meta = meta_local
 
     o = resolver_estacion(origen, meta)
     d = resolver_estacion(destino, meta)
@@ -66,6 +74,14 @@ def predecir(
 
     if bundle is None:
         bundle = cargar_modelos(dir_modelos)
+
+    # El bundle se entrenó con unas features: si cambiaron, la predicción
+    # saldría silenciosamente mal.
+    if list(bundle.get("features", FEATURES)) != list(FEATURES):
+        raise ValueError(
+            "El modelo guardado usa un conjunto de features distinto al "
+            "actual. Reentrena: python -m supervised entrenar"
+        )
 
     x = [vector_features(o, d, meta)]
 
@@ -76,20 +92,27 @@ def predecir(
 
     mejor_t = bundle["mejor_tiempo"]
     mejor_r = bundle["mejor_transbordos"]
-    tiempo_pred = int(round(preds_tiempo[mejor_t]))
+    # Redondeo de modelos lineales/GB que pueden predecir minutos negativos
+    tiempo_pred = max(0, int(round(preds_tiempo[mejor_t])))
     trans_pred = max(0, preds_trans[mejor_r])
 
     real = _estimar_real(o, d, g)
+    sin_ruta = real[COLUMNA_TIEMPO] < 0
+    tiempo_real = None if sin_ruta else real[COLUMNA_TIEMPO]
+    trans_real = None if sin_ruta else real[COLUMNA_TRANSBORDOS]
 
     return {
         "origen": o,
         "destino": d,
         "tiempo_pred": tiempo_pred,
         "transbordos_pred": trans_pred,
-        "tiempo_real": real[COLUMNA_TIEMPO],
-        "transbordos_real": real[COLUMNA_TRANSBORDOS],
-        "error_tiempo": abs(tiempo_pred - real[COLUMNA_TIEMPO]),
-        "error_transbordos": abs(trans_pred - real[COLUMNA_TRANSBORDOS]),
+        "tiempo_real": tiempo_real,
+        "transbordos_real": trans_real,
+        "sin_ruta": sin_ruta,
+        "error_tiempo": None if sin_ruta else abs(tiempo_pred - real[COLUMNA_TIEMPO]),
+        "error_transbordos": (
+            None if sin_ruta else abs(trans_pred - real[COLUMNA_TRANSBORDOS])
+        ),
         "modelos": {"tiempo": mejor_t, "transbordos": mejor_r},
         "por_modelo": {"tiempo": preds_tiempo, "transbordos": preds_trans},
         "features": dict(zip(FEATURES, x[0])),

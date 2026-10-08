@@ -27,7 +27,9 @@ from .loaders import (
     slugificar,
 )
 
-REGLAS_PATH = os.path.join("kb", "reglas.pl")
+# Anclado a la raíz del repo: no depende del directorio desde el que se ejecute
+_RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REGLAS_PATH = os.path.join(_RAIZ, "kb", "reglas.pl")
 
 # Distancia máxima (m) para considerar transbordo caminando entre corredores.
 # Cubre pares reales como Calle 5 <-> Carrera 15 (~570 m) o Calle 13 <-> Calle 15 (~200 m).
@@ -124,7 +126,14 @@ def construir_relations(
         elif e.tipo == "PLA":
             tipo_logico = "parada"
 
-        estaciones_dict[e.slug] = (e.slug, tipo_logico, e.zona_integration or e.corredor)
+        # La zona se guarda SIEMPRE como slug (igual que los hechos 'estacion/4'
+        # y que los nodos hub 'zona_*'), para que una misma zona tenga un único
+        # código: 'Universidades' y 'universidades' no deben ser dos zonas.
+        estaciones_dict[e.slug] = (
+            e.slug,
+            tipo_logico,
+            slugificar(e.zona_integration or e.corredor),
+        )
         coordenadas[e.slug] = (e.lat, e.lon)
 
         facts.append(Fact("estacion", (str(i), e.slug, tipo_logico,
@@ -264,12 +273,16 @@ def relations_desde_kb(kb_path: str) -> Dict[str, Any]:
     return extract_relations(parse_kb(kb_path))
 
 
-def exportar_kb_pl(relations: Dict[str, Any], salida: str = "kb/datos_generados.pl") -> str:
+def exportar_kb_pl(
+    relations: Dict[str, Any], salida: Optional[str] = None
+) -> str:
     """Exporta los hechos de relations a un archivo .pl (para inspección/depuración)."""
+    if salida is None:
+        salida = os.path.join(_RAIZ, "kb", "datos_generados.pl")
     os.makedirs(os.path.dirname(salida) or ".", exist_ok=True)
     lines = [
         "% Archivo GENERADO automáticamente desde data/*.csv",
-        "% No editar a mano; regenerar con: python -m mio_router.builder.exportar",
+        "% No editar a mano; regenerar con: python -m mio_router.builder",
         "",
     ]
     for fact in relations.get("facts", []):

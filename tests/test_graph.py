@@ -80,13 +80,16 @@ class TestDijkstra:
         assert tiempo > 0
 
     def test_dijkstra_mismo_nodo(self):
-        """Test Dijkstra desde un nodo hasta sí mismo."""
+        """Dijkstra de un nodo a sí mismo: coste 0 sin tramos."""
         kb = parse_kb("kb/mio.pl")
         relations = extract_relations(kb)
         g = construir_grafo(relations)
-        
-        # Esto debería retornar None o manejarse adecuadamente
-        # Por ahora comprobamos que el grafo se construye
+
+        resultado = dijkstra(g, "paso_del_comercio", "paso_del_comercio")
+        assert resultado is not None
+        tiempo, tramos = resultado
+        assert tiempo == 0
+        assert tramos == []
 
 
 class TestEncontrarRuta:
@@ -148,3 +151,37 @@ class TestHeuristica:
         
         h = heuristica("paso_del_comercio", "paso_del_comercio", g)
         assert h == 0.0
+
+
+class TestIntegridadDelGrafo:
+    """Regresiones: aristas duplicadas y determinismo del Dijkstra."""
+
+    def test_sin_aristas_duplicadas(self):
+        """Cada par de nodos aparece como mucho una vez por dirección.
+
+        El builder guarda los dos sentidos de los transbordos y las zonas, y
+        `construir_grafo` añadía además el inverso: el grado de todos los
+        nodos salía inflado y con él las features `grado_o`/`grado_d`.
+        """
+        kb = parse_kb("kb/mio.pl")
+        relations = extract_relations(kb)
+        g = construir_grafo(relations)
+
+        for nodo, aristas in g.adj.items():
+            destinos = [a.destino for a in aristas]
+            assert len(destinos) == len(set(destinos)), f"duplicados en {nodo}"
+
+    def test_dijkstra_es_determinista(self):
+        """La misma consulta devuelve siempre la misma ruta.
+
+        Antes la selección del nodo mínimo iteraba un `set`, así que el
+        resultado dependía de PYTHONHASHSEED y `od.csv` cambiaba entre
+        ejecuciones.
+        """
+        from mio_router.builder import construir_relations
+
+        relations = construir_relations()
+        g = construir_grafo(relations)
+        resultados = [dijkstra(g, "univalle", "chiminangos") for _ in range(5)]
+        assert resultados[0] is not None
+        assert all(r == resultados[0] for r in resultados)

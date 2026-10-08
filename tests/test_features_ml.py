@@ -82,3 +82,16 @@ def test_construir_meta_es_determinista(ctx):
     assert a.corredor_idx == b.corredor_idx
     assert a.zona_idx == b.zona_idx
     assert a.nombre_a_slug == b.nombre_a_slug
+
+
+def test_nueve_zonas_normalizadas(ctx):
+    """Regresión: la zona se guardaba en crudo y como slug a la vez, así que
+    'Universidades' y 'universidades' eran dos zonas distintas (18 en vez de
+    9) y `idx_zona_o`/`idx_zona_d` marcaban distinto a la misma zona."""
+    _, _, meta = ctx
+    assert len(meta.zona_idx) == 9, sorted(meta.zona_idx)
+
+    # los miembros de una zona comparten índice
+    a, b = "univalle", "universidades"
+    assert meta.zona_de(a) == meta.zona_de(b)
+    assert meta.zona_idx[meta.zona_de(a)] == meta.zona_idx[meta.zona_de(b)]

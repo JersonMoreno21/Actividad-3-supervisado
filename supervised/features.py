@@ -93,6 +93,8 @@ def construir_meta(relations: Dict[str, Any], graph: Any) -> MetaFeatures:
     sirve: Dict[str, List[str]] = relations.get("sirve", {})
     coords: Dict[str, Tuple[float, float]] = relations.get("coordenadas", {})
 
+    from mio_router.loaders import slugificar
+
     corredor = _invertir_sirve(sirve)
     reales = sorted(estaciones)
 
@@ -100,7 +102,10 @@ def construir_meta(relations: Dict[str, Any], graph: Any) -> MetaFeatures:
     tipo: Dict[str, str] = {}
     for s, v in estaciones.items():
         tipo[s] = v[1]
-        zona[s] = v[2]
+        # Defensa en profundidad: la zona debe tener un único código (slug).
+        # Si alguna fuente la diera en crudo ('Universidades') y otra en slug
+        # ('universidades'), se duplicarían los índices y 'misma_zona' mentiría.
+        zona[s] = slugificar(v[2]) if v[2] else ""
 
     corredor_idx = {c: i for i, c in enumerate(sorted(set(corredor.values())))}
     zona_idx = {z: i for i, z in enumerate(sorted(set(zona.get(s, "") for s in reales)))}

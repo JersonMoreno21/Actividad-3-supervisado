@@ -6,13 +6,14 @@ import os
 import numpy as np
 import pytest
 
-from supervised.dataset import cargar_dataset
+from supervised.dataset import COLUMNA_DESTINO, COLUMNA_ORIGEN, cargar_dataset
 from supervised.features import FEATURES
 from supervised.train import (
     METRICS_JSON,
     MODELO_JOBLIB,
     cargar_modelos,
     entrenar,
+    indices_split,
     metricas_clasificacion,
     metricas_regresion,
     resumen,
@@ -34,12 +35,25 @@ def metrics(df):
 
 def test_estructura_de_metricas(metrics):
     assert metrics["n_filas"] == MUESTRA
-    assert metrics["n_train"] + metrics["n_test"] == MUESTRA
+    # el split por origen descarta pares origen(train)->destino(test):
+    # train + test + descartadas tiene que cuadrar con las filas
+    assert metrics["n_train"] + metrics["n_test"] + metrics["n_descartadas"] == MUESTRA
+    assert metrics["n_train"] > metrics["n_test"] > 0
     assert metrics["features"] == FEATURES
     for grupo in ("tiempo", "transbordos"):
         assert len(metrics[grupo]) >= 3
     assert metrics["mejor_tiempo"] in metrics["tiempo"]
     assert metrics["mejor_transbordos"] in metrics["transbordos"]
+
+
+def test_mejor_modelo_elegido_por_cv(metrics):
+    """El 'mejor' no puede salir de mirar el test (dejaría de ser held-out)."""
+    assert metrics["mejor_seleccionado_por"] == "cv_train"
+    assert metrics["evaluacion"]["estrategia"].startswith("held-out")
+    assert metrics["cv"]["folds"] >= 2
+    assert metrics["cv"]["estrategia"].startswith("GroupKFold")
+    # las métricas reportadas siguen siendo las del test
+    assert metrics["tiempo"][metrics["mejor_tiempo"]]["mae"] >= 0
 
 
 def test_tiempos_baten_baselines(metrics):
@@ -71,6 +85,39 @@ def test_split_sin_fuga_de_etiquetas(df):
     assert X_train.shape[1] == len(FEATURES)
     assert X_train.shape[0] == len(y_t_train) == len(y_c_train)
     assert X_test.shape[0] == len(y_t_test) == len(y_c_test)
+
+
+def test_split_particiones_disjuntas_y_completas(df):
+    info = indices_split(df)
+    d = info["df"]
+    tr, te, de = info["train"], info["test"], info["descartados"]
+    total = set(range(len(d)))
+    assert set(tr) | set(te) | set(de) == total
+    assert not set(tr) & set(te)
+    assert not set(tr) & set(de)
+    assert not set(te) & set(de)
+    assert len(te) > 0 and len(de) > 0
+    assert info["origenes_test"]
+
+
+def test_split_sin_fuga_por_espejo(df):
+    """Regresión: con un split aleatorio por filas, el 78 % del test tenía su
+    par espejo (b,a) ya visto en train (las etiquetas de (a,b) y (b,a) son
+    idénticas), y las métricas salían infladas."""
+    info = indices_split(df)
+    d = info["df"]
+    train = d.iloc[info["train"]]
+    test = d.iloc[info["test"]]
+
+    pares_train = set(zip(train[COLUMNA_ORIGEN], train[COLUMNA_DESTINO]))
+    pares_test = set(zip(test[COLUMNA_ORIGEN], test[COLUMNA_DESTINO]))
+    assert not {(b, a) for a, b in pares_train} & pares_test
+
+    # ningún origen del test se ha visto nunca como origen en train
+    assert not {a for a, _ in pares_train} & {a for a, _ in pares_test}
+
+    # los orígenes del test son exactamente el grupo de test
+    assert {a for a, _ in pares_test} == set(info["origenes_test"])
 
 
 def test_guardar_y_recargar(df, tmp_path):

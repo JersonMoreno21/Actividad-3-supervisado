@@ -14,6 +14,14 @@ from mio_router.inference import (
 )
 
 
+@pytest.fixture(scope="module")
+def relations():
+    """Relations canónicas (hechos de los CSV + reglas de kb/reglas.pl)."""
+    from mio_router.builder import construir_relations
+
+    return construir_relations()
+
+
 class TestUnificacion:
     """Tests para la unificación."""
 
@@ -64,16 +72,83 @@ class TestBackwardChaining:
         # Debería encontrar la estación paso_del_comercio
         assert len(soluciones) > 0
 
-    def test_backward_chain_regla(self):
-        """Test backward chaining con regla."""
-        kb = parse_kb("kb/mio.pl")
-        relations = extract_relations(kb)
-        
-        # Query que pueda ser derivada por regla
-        query = ("alcanzable", "paso_del_comercio", "andres_sinan")
+    def test_backward_chain_regla(self, relations):
+        """Query sin hechos directos: se deriva con las reglas externas.
+
+        Antes los cuerpos de kb/reglas.pl se parseaban vacíos (partición por
+        ',' ignorando paréntesis) y ninguna regla llegaba a dispararse.
+        """
+        soluciones = backward_chain(("conectado", "X", "Y"), relations)
+        assert len(soluciones) > 100
+        # variables realmente instanciadas (no literales 'X'/'Y')
+        assert all(
+            isinstance(s["X"], str) and s["X"][0].islower()
+            and isinstance(s["Y"], str) and s["Y"][0].islower()
+            for s in soluciones
+        )
+        assert any(s["X"] != s["Y"] for s in soluciones)
+
+    def test_backward_chain_hecho_no_usa_reglas(self, relations):
+        """Un hecho conocido no necesita reglas y sigue resolviéndose."""
+        soluciones = backward_chain(("estacion", "1", "paso_del_comercio",
+                                     "terminal", "norte"), relations)
+        assert isinstance(soluciones, list)
+
+
+class TestReglasDelSistema:
+    """Las 8 reglas de kb/reglas.pl deben dispararse de verdad."""
+
+    def test_las_ocho_reglas_se_parsean(self, relations):
+        reglas = relations["rules"]
+        assert len(reglas) == 8
+        for r in reglas:
+            assert r.body_atoms, f"regla {r.head_predicate} sin cuerpo"
+            for pred, args in r.body_atoms:
+                assert pred
+                assert len(args) > 0
+
+    @pytest.mark.parametrize(
+        "query,minimo",
+        [
+            (("conectado", "X", "Y"), 100),
+            (("viaje_directo", "X", "Y", "R"), 100),
+            (("alcanzable_un_salto", "X", "Y"), 100),
+            (("alcanzable_dos_saltos", "X", "Y"), 100),
+            (("misma_zona", "X", "Y"), 100),
+            (("pertenece_corredor", "E", "R"), 50),
+            (("posible_transbordo", "E"), 10),
+        ],
+    )
+    def test_reglas_disparan(self, relations, query, minimo):
         soluciones = backward_chain(query, relations)
-        # Puede tener soluciones dependiendo de las reglas implementadas
-        # Al mínimo, el método no debe fallar
+        assert len(soluciones) >= minimo, query
+        assert all(isinstance(v, str) for s in soluciones for v in s.values())
+
+    def test_alcanzable_dos_saltos_encadena_z(self, relations):
+        soluciones = backward_chain(("alcanzable_dos_saltos", "X", "Y"), relations)
+        con_z = [s for s in soluciones if "Z" in s]
+        assert con_z, "el cuerpo de dos saltos debe instanciar la variable Z"
+        assert all(s["Z"] not in (s["X"], s["Y"]) for s in con_z[:50])
+
+    def test_misma_zona_comparte_zona(self, relations):
+        soluciones = backward_chain(("misma_zona", "univalle", "Y"), relations)
+        assert soluciones
+        zona_univalle = relations["estaciones"]["univalle"][2]
+        for s in soluciones:
+            assert relations["estaciones"][s["Y"]][2] == zona_univalle
+        assert any(s["Y"] != "univalle" for s in soluciones)
+
+    def test_variables_de_la_query_no_colisionan_con_las_de_la_regla(self, relations):
+        """Una query con 'X'/'Y' no puede quedar mapeada a sí misma.
+
+        Sin estandarización de variables, la X de la query y la X de la
+        regla eran la misma y devolvía pares falsos (o vacíos).
+        """
+        soluciones = backward_chain(("viaje_directo", "X", "Y", "R"), relations)
+        assert soluciones
+        for s in soluciones:
+            assert s["X"][0].islower() and s["Y"][0].islower() and s["R"][0].islower()
+            assert s["X"] != s["Y"]
 
 
 class TestDerivarAlcanzable:
@@ -105,30 +180,51 @@ class TestDerivarViajeDirecto:
         )
         assert len(vd) > 0
 
-    def test_viaje_directo_sin_transbordo(self):
-        """Test que el viaje directo no tiene transbordo."""
-        kb = parse_kb("kb/mio.pl")
-        relations = extract_relations(kb)
-        
-        vd = derivar_viaje_directo(
-            "paso_del_comercio", "universidades", relations
+    def test_viaje_directo_solo_si_hay_conexion(self, relations):
+        """viaje_directo/3 solo se satisface si existe una conecta/4.
+
+        Antes el cuerpo se parseaba vacío y la regla devolvía (o no) al azar
+        según los hechos disponibles.
+        """
+        hechos_conecta = [f.args for f in relations["facts"]
+                          if f.predicate == "conecta"]
+        conectados = {(a, b) for a, b, _, _ in hechos_conecta}
+
+        a, b, ruta = hechos_conecta[0][:3]
+        sol = derivar_viaje_directo(a, b, relations)
+        assert sol, f"debería haber viaje directo {a} -> {b}"
+        assert sol[0]["ruta"] == ruta
+
+        nodos = [n for n, v in relations["estaciones"].items()
+                 if v[1] != "zona"][:30]
+        x, y = next(
+            (p, q) for p in nodos for q in nodos
+            if p != q and (p, q) not in conectados and (q, p) not in conectados
         )
-        # El resultado puede variar, solo verificamos que no cause error
+        assert derivar_viaje_directo(x, y, relations) == []
 
 
 class TestDerivarRequiereTransbordo:
-    """Tests para derivar requiere transbordo."""
+    """requiere_transbordo debe depender de la ruta, no de la KB entera."""
 
-    def test_requiere_transbordo_estaciones(self):
-        """Test que derive transbordos entre estaciones."""
-        kb = parse_kb("kb/mio.pl")
-        relations = extract_relations(kb)
-        
-        rt = derivar_requiere_transbordo(
-            "Terminal Paso del Comercio", "Universidades", relations
-        )
-        # Debe retornar una lista (puede estar vacía dependiendo de la KB)
-        assert isinstance(rt, list)
+    def test_transbordos_de_un_viaje_largo(self, relations):
+        rt = derivar_requiere_transbordo("univalle", "chiminangos", relations)
+        assert rt, "un viaje entre corredores distintos tiene transbordos"
+        for t in rt:
+            assert t["origen"] == "univalle" and t["destino"] == "chiminangos"
+            assert t["ruta1"] != t["ruta2"]
+            assert t["estacion_transbordo"]
+
+    def test_viaje_directo_no_tiene_transbordos(self, relations):
+        """Estaciones vecinas: el camino de tiempo mínimo no cambia de ruta.
+
+        Antes se devolvían los 95 transbordos de la KB entera.
+        """
+        assert derivar_requiere_transbordo("cien_palos", "primitivo", relations) == []
+
+    def test_estaciones_desconocidas_o_iguales(self, relations):
+        assert derivar_requiere_transbordo("NoExiste", "TampocoExiste", relations) == []
+        assert derivar_requiere_transbordo("univalle", "univalle", relations) == []
 
 
 class TestExplicarHistorial:

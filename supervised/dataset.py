@@ -21,7 +21,10 @@ from mio_router.graph import Graph, construir_grafo, dijkstra
 
 from .features import FEATURES, MetaFeatures, construir_meta, vector_features
 
-DATASETS_DIR = os.path.join("datasets")
+# Anclado a la raíz del repo: el dataset se encuentra aunque se ejecute el
+# comando desde otro directorio.
+_RAIZ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATASETS_DIR = os.path.join(_RAIZ, "datasets")
 DATASET_CSV = os.path.join(DATASETS_DIR, "od.csv")
 
 COLUMNA_ORIGEN = "origen"
