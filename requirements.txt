@@ -1,0 +1,8 @@
+pytest>=7.0.0
+# 1.9.1: en Windows 11 con Smart App Control los .pyd de esa versión pueden
+# quedar bloqueados ("Application Control policy"); 1.9.0 carga sin problemas.
+scikit-learn==1.9.0
+numpy>=1.26.0
+pandas>=2.0.0
+matplotlib>=3.8.0
+joblib>=1.4.0
