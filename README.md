@@ -8,6 +8,9 @@ original (Dijkstra sobre el grafo MIO), que actúa como **profesor**.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/JersonMoreno21/Actividad-3-supervisado/blob/master/demo.ipynb)
 
+**Empieza por:** [instalación](#3-instalación) · [ejemplos de uso](#4-ejemplos-de-uso) ·
+[resultados](#6-resultados-test-held-out-por-origen-1602-pares) · [pruebas](#8-pruebas)
+
 > **Nota académica:** los datos provienen de los datasets oficiales de
 > [MetroCali](https://www.metrocali.gov.co); el experimento es ilustrativo y
 > aproximado, con fines académicos.
@@ -91,24 +94,103 @@ pip install -r requirements.txt
 
 ---
 
-## 4. Uso (CLI)
+## 4. Ejemplos de uso
+
+### 4.1 Motor simbólico — `python -m mio_router`
+
+Ruta óptima (Dijkstra) entre dos estaciones; acepta tildes, mayúsculas y
+nombres legibles o slugs:
 
 ```bash
-# 1) Genera el dataset con Dijkstra como profesor (≈ 40 s)
+python -m mio_router --origen univalle --destino chiminangos
+```
+
+```text
+[OK] Ruta: Univalle -> Chiminangos
+Tiempo total: 67 minutos
+Transbordos: 8
+Tramos:
+  Univalle -> Buitrera (carrera_100, 1 min)
+  Buitrera -> Meléndez (caminata transbordo, 7 min)
+  Meléndez -> Capri (calle_5, 4 min)
+  ...
+  Flora Industrial -> Chiminangos (carrera_1, 2 min)
+```
+
+Otros criterios de optimización, la explicación del razonamiento y el modo
+interactivo con sugerencias:
+
+```bash
+# menos transbordos aunque tarde más (92 min, 6 transbordos)
+python -m mio_router --origen univalle --destino chiminangos --criterio transbordos
+
+# misma ruta + cadena de razonamiento (algoritmo, hechos usados, tramos)
+python -m mio_router --origen univalle --destino chiminangos --explicar
+
+python -m mio_router --listar-estaciones
+python -m mio_router            # interactivo: "Origen:" / "Destino:" / "salir"
+```
+
+### 4.2 Aprendizaje supervisado — `python -m supervised`
+
+```bash
+# 1) Genera datasets/od.csv con Dijkstra como profesor (≈ 40 s)
 python -m supervised generar
 
-# 2) Entrena los 9 modelos y guarda bundle + métricas (≈ 45 s, con CV de 5 pliegues)
+# 2) Entrena los 9 modelos con CV de 5 pliegues (≈ 45 s)
 python -m supervised entrenar
+```
 
-# 3) Predice un viaje y compáralo con la ruta real
+```text
+Filas: 8010  (train 5112 / test 1602 / descartadas 1296)
+Evaluación: held-out por origen  |  mejor modelo por: cv_train
+
+TIEMPO (min) — sobre test
+modelo                     MAE    RMSE        R²
+baseline_media          11.669   14.37    -0.035
+baseline_velocidad       5.683   7.897     0.687
+ridge                     4.57   6.139     0.811
+random_forest            2.059    2.76     0.962  <- mejor
+gradient_boosting        3.183   4.046     0.918
+```
+
+Predice un viaje y compáralo con la ruta real del profesor:
+
+```bash
 python -m supervised predecir --origen Univalle --destino Chiminangos --todos
+```
 
-# También por nombre de zona (nodo virtual zona_*)
+```text
+[OK] Viaje: univalle -> chiminangos
+Predicción (modelo random_forest): 67 min, 8 transbordos
+Real (Dijkstra)  : 67 min, 8 transbordos
+Error            : 0 min, 0 transbordos
+
+Por modelo:
+  tiempo       baseline_media            29.9 min
+  tiempo       baseline_velocidad        74.7 min
+  tiempo       gradient_boosting         66.5 min
+  tiempo       random_forest             66.7 min
+  tiempo       ridge                     65.1 min
+  transbordos  baseline_frecuente           4
+  transbordos  knn                          7
+  transbordos  logreg                       6
+  transbordos  random_forest                8
+```
+
+También por nombre de zona (nodo virtual `zona_*`), y las métricas o el
+listado de estaciones:
+
+```bash
 python -m supervised predecir --origen "Paso del Comercio" --destino Universidades
-
-# Métricas del último entrenamiento / listado de estaciones
 python -m supervised evaluar
-python -m supervised listar --filtro cali
+python -m supervised listar --filtro univalle
+```
+
+```text
+univalle                           corredor=carrera_100          zona=universidades
+
+81 estaciones
 ```
 
 > `predecir` necesita el bundle entrenado (`models/model.joblib`, ~93 MB y
@@ -118,26 +200,49 @@ python -m supervised listar --filtro cali
 > y las métricas guardados quedan marcados como parciales), `--sin-cv` (omite
 > la validación cruzada) y `--sin-guardar`.
 
-Ejemplo de salida:
+### 4.3 Como librería
 
-```text
-[OK] Viaje: univalle -> chiminangos
-Predicción (modelo random_forest): 67 min, 8 transbordos
-Real (Dijkstra)  : 67 min, 8 transbordos
-Error            : 0 min, 0 transbordos
-```
-
-### Como librería
+Ruta óptima con el profesor:
 
 ```python
-from supervised.dataset import cargar_dataset
-from supervised.train import entrenar, cargar_modelos
+from mio_router.builder import construir_relations
+from mio_router.graph import construir_grafo, dijkstra
+
+g = construir_grafo(construir_relations())
+tiempo, tramos = dijkstra(g, "univalle", "chiminangos")
+print(tiempo, "min")                      # 67 min
+print(tramos[0])                          # ('buitrera', 'carrera_100', 1)
+```
+
+Inferencia simbólica (backward chaining sobre las 8 reglas de `kb/reglas.pl`):
+
+```python
+from mio_router.builder import construir_relations
+from mio_router.inference import backward_chain, derivar_requiere_transbordo
+
+rel = construir_relations()
+
+viajes = backward_chain(("viaje_directo", "univalle", "Y", "R"), rel)
+print(len(viajes), "viajes directos")     # 2 viajes directos
+print(viajes[0])                          # {'Y': 'universidades', 'R': 'carrera_100', 'X': 'univalle'}
+
+tb = derivar_requiere_transbordo("univalle", "chiminangos", rel)
+print(len(tb), "transbordos en el viaje") # 12 transbordos en el viaje
+print(tb[0]["estacion_transbordo"])       # buitrera
+```
+
+Entrenar y predecir con los modelos supervisados:
+
+```python
+from supervised.train import entrenar
 from supervised.predict import predecir
 
-df = cargar_dataset()
-metrics = entrenar(df, guardar=True, verbose=True)
+entrenar()                                # la primera vez crea models/model.joblib
 res = predecir("Univalle", "Chiminangos")
-print(res["tiempo_pred"], res["tiempo_real"], res["error_tiempo"])
+
+print(res["tiempo_pred"], res["tiempo_real"], res["error_tiempo"])        # 67 67 0
+print(res["transbordos_pred"], res["transbordos_real"])                  # 8 8
+print(res["modelos"])                                                   # {'tiempo': 'random_forest', ...}
 ```
 
 ---
@@ -189,25 +294,13 @@ accuracy 0,677 ± 0,091), coherente con el test: no hay atajo mirando el test.
 
 ---
 
-## 7. Demo en Google Colab
+## 7. Demo (`demo.ipynb`)
 
-Abre `demo.ipynb` en Colab con *Runtime → Run all*. El notebook es
-**autocontenido**: clona este repositorio, instala `requirements.txt`, genera el
-dataset si hace falta, entrena, grafica (EDA + métricas), predice viajes
-concretos y corre los 116 tests.
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/JersonMoreno21/Actividad-3-supervisado/blob/master/demo.ipynb)
-
-Para que el enlace anterior funcione, sube el proyecto a GitHub:
-
-```bash
-git init
-git add .
-git commit -m "Actividad 3: versión supervisada del ruteo MIO"
-git branch -M master
-git remote add origin https://github.com/JersonMoreno21/Actividad-3-supervisado.git
-git push -u origin master
-```
+El notebook [`demo.ipynb`](demo.ipynb) se puede abrir tal cual en GitHub o en
+[Google Colab](https://colab.research.google.com/github/JersonMoreno21/Actividad-3-supervisado/blob/master/demo.ipynb)
+(*Runtime → Run all*). Es **autocontenido**: clona este repositorio, instala
+`requirements.txt`, genera el dataset si hace falta, entrena, grafica (EDA +
+métricas), predice viajes concretos y corre los 116 tests.
 
 ---
 
